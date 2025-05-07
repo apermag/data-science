@@ -1,0 +1,431 @@
+---
+title: "Predicción in-silico de sitios de escisión reconocidos por la proteasa del HIV-1"
+author: "Alexandre Pereiras Magarinos"
+date: '`r format(Sys.Date(),"%e de %B, %Y")`' 
+output:
+  html_document:
+    toc: yes
+    toc_depth: 2
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+params:
+  file_name_schilling: "schillingData.txt"
+  file_name_impens: "impensData.txt"
+  seed: 123
+  training_set: 67
+  test_set: 33
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+# knitr options
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{r libraries, include=FALSE}
+# Install packages
+# Load packages
+# ...
+repos = "http://cran.us.r-project.org"
+library(knitr)
+
+if (!require("gmodels")) {
+   install.packages("gmodels", repos = repos)
+   library(gmodels)
+}
+if (!require("class")) {
+   install.packages("class", repos = repos)
+   library(class)
+}
+if (!require("hmeasure")) {
+   install.packages("hmeasure", repos = repos)
+   library(hmeasure)
+}
+if (!require("ggseqlogo")) {
+   install.packages("ggseqlogo", repos = repos)
+   library(ggseqlogo)
+}
+if (!require("ggplot2")) {
+   install.packages("ggplot2", repos = repos)
+   library(ggplot2)
+}
+if (!require("ROCR")) {
+   install.packages("ROCR", repos = repos)
+   library(ROCR)
+}
+if (!require("pROC")) {
+   install.packages("pROC", repos = repos)
+   library(pROC)
+}
+```
+
+```{r input, include=FALSE}
+# Input / Output variables
+# Tuning parameters
+# ...
+data_schilling <- params$file_name_schilling
+data_impens <- params$file_name_impens
+training_set <- params$training_set
+test_set <- params$test_set
+knn_seed <- params$seed
+```
+
+# Algoritmo k-NN
+
+Según @lantz2015machine, los *K* vecinos más cercanos o **k-NN** *(k nearest neighbours)* es un algoritmo que clasifica cada dato nuevo en el grupo que corresponda, según tenga *k* vecinos más cerca de un grupo u otro. Para determinar qué grupo está más cerca del dato, el **k-NN** calcula la distancia del elemento nuevo a cada uno de los existentes, y ordena dichas distancias de menor a mayor para ir seleccionando el grupo al cual pertenecer mediante un proceso *democrático*, es decir, el de mayor frecuencia con menores distancias.
+
+## Características
+
+El algoritmo **k-NN** no genera un modelo a partir del aprendizaje con datos de entrenamiento, sino que el aprendizaje sucede en el mismo momento en el que se prueban los datos de test, de ahí que aeste tipo de algoritmos se les llame ***lazy learning methods***.
+
+**k-NN** es muy sensible a:
+
+-   La variable *k*, ya que según su valor podemos obtener unos resultados muy distintos. Se suele recomendar la raíz cuadrada del número entradas del conjunto de entrenamiento.
+-   El cálculo de la similitud mediante la función de cálculo de distancia, puesto que esta influirá fuertemente, en las relaciones de cercanía que se irán estableciendo en el proceso de construcción del algoritmo. Generalmente se utiliza la *distancia Euclídea*, pero podríamos utilizar la *distancia Manhattan* si así fuese necesario.
+
+## Pros y contras
+
+Según @lantz2015machine, los pros y contras de este algoritmo son las siguientes:
+
+| **Pros** | **Contras** |
+|:----------------------------------|:----------------------------------|
+| Simple y efectivo | No genera ningún modelo, limitando la posibilidad de entender cómo las variables se relacionan con la clase generada tras la ejecución del algoritmo |
+| No realiza suposiciones sobre la distribución de datos | Fase de clasificación lenta |
+| Fase de entrenamiento rápida | Requiere una gran cantidad de memoria |
+|  | Variables nominales y la falta de datos requiere procesamiento adicional |
+
+# Caso de Uso
+
+## Introducción
+
+En este proyecto vamos a realizar un informe que analiza un caso basado en los datos del artículo: **State of the art prediction of HIV-1 protease cleavage sites. Rögnvaldsson et al. Bioinformatics, 2015, 1-7. doi: 10.1093/bioinformatics/btu810**
+
+En este artículo se investiga la predicción in-silico de los sitios en las proteinas que son reconocidos para la escisión (*cleavage*) por la proteasa del HIV-1. En el siguiente extracto del artículo se comenta lo siguiente:
+
+*There are two different approaches to predicting cleavage by HIV-1 protease: molecular modeling and sequence analysis. It has been argued that the HIV-1 protease recognizes shape rather than a specific amino acid sequence (Prabu-Jeybalan et al., 2002), which supports aiming for the molecular modeling approach. However, the method is cumbersome and no large scale study has been done on the accuracy of molecular modeling approaches so it is very unclear if the approach is, or will be, competitive with the sequence based approach. This article demonstrates the current state-of-theart prediction, which uses the sequence-based approach.*
+
+En particular, en el artículo de *Rögnvaldsson et al.* se centra en la tarea de predecir si dado un octámero (secuencia de 8 aminoacidos), éste será o no reconocido por la proteasa.
+
+*The HIV-1 cleavage problem is described in detail in (Rögnvaldsson et al., 2007) together with discussions on different encoding schemes. Only a concise description is given here. The classification task is to tell whether a given octamer (sequence of eight amino acids) will be cleaved or not between the fourth and the fifth position.*
+
+La manera elegida para representar los datos es un paso crucial en los algoritmos de clasificación. En el caso que nos ocupa, análisis basados en secuencias, usaremos el mismo tipo de representación que los autores emplearon en el su estudio.
+
+*The octamer is represented using an orthogonal encoding where each amino acid is represented by a 20-bit vector with 19 bits set to zero and one bit set to one (other encodings have been suggested, see later). This maps each octamer to an 8 by 20 binary matrix that is transformed into a 160-dimensional vector. En la PEC se implementará un algoritmo knn para predecir aquellos octameros que son sustrato para de la proteasa del HIV-1.*
+
+## Objetivo
+
+Este proyecto tiene dos objetivos fundamentales:
+
+-   Desarrollar una función en R que implemente una codificación ortogonal (*orthogonal encoding*) de los octameros.
+-   Desarrollar un script en R que implemente un clasificador *knn* en base a las siguientes características:
+    -   Utilizaremos un *knn* (k = 3, 5, 7, 11) basado en el conjunto de datos de *training* para predecir qué octameros del test tienen o no *cleavage site*.
+    -   Realizar una curva ROC para cada *k* y calcularemos su área bajo la curva (*AUC*).
+    -   Utilizaremos la semilla aleatoria 123, y separaremos los datos en dos conjuntos de datos: datos para *training* (67%) y una datos para *test* (33%).
+
+# Diagnóstico mediante k-NN
+
+## Paso 1 - Recopilando datos
+
+```{r, echo=FALSE, include=FALSE}
+df_schilling <- read.csv(data_schilling, header = FALSE)
+df_impens <- read.csv(data_impens, header = FALSE)
+no_rows_schilling <- nrow(df_schilling)
+no_vars_schilling <- ncol(df_schilling)
+no_rows_impens <- nrow(df_impens)
+no_vars_impens <- ncol(df_impens)
+no_rows <- no_rows_impens + no_rows_schilling
+```
+
+Utilizaremos el conjunto de datos del *UCI Machine Learning Repository*, disponible en <http://archive.ics.uci.edu/ml>. Utilizaremos dos conjuntos de datos proporcionados por Thorsteinn Rögnvaldsson, de la *Halmstad University*:
+
+-   **`r data_schilling`**, que contiene información de **`r no_vars_schilling`** atributos acerca de octámeros (8 aminoacidos) y un atributo con valores 1 y -1 indicando si la proteasa HIV-1 tiene una escisión en la posición central (entre los aminoacidoss 4 y 5) o no. El número de filas proporcionadas en este fichero son **`r no_rows_schilling`**.
+-   **`r data_impens`**, que contiene información de **`r no_vars_impens`** atributos, al igual que el fichero anterior, acerca de octámeros (8 aminoacidos) y un atributo con valores 1 y -1 indicando si la proteasa HIV-1 tiene una escisión en la posición central (entre los aminoacidoss 4 y 5) o no. El número de filas proporcionadas en este fichero son **`r no_rows_impens`**.
+
+Ambos ficheros de datos se utilizarán para validar nuestra predicción.
+
+## Paso 2 - Explorando datos
+
+Comenzaremos importando los datos de ambos ficheros. No transformaremos los octámeros a tipo de dato factores, e indicamos que se importen los datos teniendo en cuenta que no tienen cabecera. A cada conjunto de datos les daremos nombres a las variables importadas para facilitar el manejo de datos.
+
+```{r readData}
+cols <- c("octamer","diagnosis")
+df_schilling <- read.csv(data_schilling, stringsAsFactors = FALSE, header = FALSE)
+colnames(df_schilling) <- cols
+df_impens <- read.csv(data_impens, stringsAsFactors = FALSE, header = FALSE)
+colnames(df_impens) <- cols
+```
+
+Utilizando el siguiente comando podemos confirmar la estructura de los datos de ambos ficheros, ya con las cabeceras aÃ±adidas:
+
+```{r dataStructures}
+str(df_schilling)
+str(df_impens)
+```
+
+La variable *diagnosis* es de interés, ya que representa el diagnóstico que queremos predecir. En el ejemplo, indica si la proteasa HIV-1 tiene una escisión en la parte central o no. Veamos los resultados de la muestra de datos para cada fichero:
+
+```{r tableSampleDiagnosis}
+table(df_schilling$diagnosis)
+table(df_impens$diagnosis)
+```
+
+Para poder trabajar con todos los datos de manera conjunta, realizaremos la unión de estos y trabajaremos con un *data frame* único.
+
+```{r tableUnionFiles}
+df = rbind(df_schilling, df_impens)
+str(df)
+```
+
+Como muchos de los clasificadores en R requieren que la variable que queremos predecir sea de tipo *factor*, transformaremos esta variable a este tipo de datos, utilizando los siguientes valores: *Yes* (valores 1) o *No*. Tras la transformación, analizamos los porcentajes de valores:
+
+```{r reFactorDiagnosis}
+df$diagnosis<- factor(df$diagnosis, levels = c(1, -1), labels = c("Yes", "No"))
+round(prop.table(table(df$diagnosis)) * 100, digits = 1)
+```
+
+### Representación logo de secuencias
+
+Como parte del análisis en este documento, mostramos los patrones utilizando un logo de secuencias para cada clase. Vemos que para aquellos octámeros cuya proteasa sí tiene escisión se ve un patrón de conservación en las posiciones 3 al 6 (primer gráfico), mientras que no se ve así en aquellos donde la proteasa no tiene escisión (segundo gráfico). Ambos logos muestran la información en bits.
+
+```{r sequenceLogoBits}
+yes_class <- ggseqlogo(subset(df, diagnosis == "Yes")$octamer, 
+                       col_scheme='chemistry', 
+                       seq_type='aa', 
+                       method = 'bits' )
+
+no_class <- ggseqlogo(subset(df, diagnosis == "No")$octamer, 
+                      col_scheme='chemistry', 
+                      seq_type='aa', 
+                      method = 'bits' )
+
+gridExtra::grid.arrange(yes_class, no_class)
+```
+
+En los siguientes dos gráficas, se muestra la misma información en probabilidades:
+
+```{r sequenceLogoProb}
+yes_class <- ggseqlogo(subset(df, diagnosis == "Yes")$octamer, 
+                       col_scheme='chemistry', 
+                       seq_type='aa', 
+                       method = 'prob' )
+
+no_class <- ggseqlogo(subset(df, diagnosis == "No")$octamer, 
+                      col_scheme='chemistry', 
+                      seq_type='aa', 
+                      method = 'prob' )
+
+gridExtra::grid.arrange(yes_class, no_class)
+```
+
+### Transformación - normalizando datos numéricos
+
+En nuestro conjunto de datos vemos que no tenemos ninguna variable de tipo numérica, que es lo que **k-nn** espera. Para poder trabajar con variables numéricas, y así poder realizar una predicción, debemos de transformar el octómero a una variable o conjunto de variables numéricas normalizadas.
+
+Según (@rognvaldsson2007bioinformatic) y (@rognvaldsson2015state), podemos transformar los octómeros a una codificación ortogonal (*orthogonal encoding*). Veamos lo que significa esto.
+
+#### Codificación ortogonal
+
+Un octómero está compuesto por una secuencia de 8 aminoacidos. La lista completa de 20 aminoacidos es la siguiente:
+
+-   *alanine - ala - **A***
+-   *arginine - arg - **R***
+-   *asparagine - asn - **N***
+-   *aspartic acid - asp - **D***
+-   *cysteine - cys - **C***
+-   *glutamine - gln - **Q***
+-   *glutamic acid - glu - **E***
+-   *glycine - gly - **G***
+-   *histidine - his - **H***
+-   *isoleucine - ile - **I***
+-   *leucine - leu - **L***
+-   *lysine - lys - **K***
+-   *methionine - met - **M***
+-   *phenylalanine - phe - **F***
+-   *proline - pro - **P***
+-   *serine - ser - **S***
+-   *threonine - thr - **T***
+-   *tryptophan - trp - **W***
+-   *tyrosine - tyr - **Y***
+-   *valine - val - **V***
+
+La codificación ortogonal se caracteriza por codificar cada uno de los 20 aminoacidos en un vector de 20 bits, donde cada posición del vector representa cada uno de los aminoacidos según el orden de presentación anterior. Así, **A** representaría la primera posición, **R** la segunda posición, y así sucesivamente. Por ejemplo, el aminoacido G, que se encuentra en la posición 8, se representaría mediante el vector (0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0), donde en la posición 8 existe un 1 para indicar que es el aminoacido **G**.
+
+Por tanto, el valor resultante de codificar un octómero será un vector de 160 posiciones. Para realizar la codificación ortogonal, se ha implementado una función que dado un octómero devuelve un vector de 160 valores codificando los 8 aminoacidos en cuestión. El código de la función se puede ver a continuación.
+
+```{r functionOrtho}
+generate_ortho <- function(octamer) {
+  #Creamos un vector vacio que contendra el resultado final
+  v <- c()
+  
+  #Almacenamos en un vector los 20 aminoacidos en el orden que se espera
+  aminoacids <- c("A", "R", "N", "D", "C", "Q", "E", "G", "H", "I", 
+                  "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V") 
+  
+  #Partimos el octamero en los 8 aminoacidos que lo componen
+  octamer_split <- strsplit(as.character(octamer), "", fixed = TRUE)[[1]]
+  
+  #Para cada aminoacido, creamos un vector de 20 posiciones inicializado a cero
+  #Segun la posicion del aminoacido en la lista almacenada
+  #Actualizamos la posicicion del vector de 20 posicioenes a 1 
+  #donde se encuentre dicho aminoacido en la lista
+  #Por ultimo, aÃ±adimos el vector generado al vector resultado
+  for(x in octamer_split) {
+    v_amino <- replicate(20,0)
+    pos <- match(x,aminoacids)
+    v_amino[pos] <- 1
+    v <- append(v, v_amino)
+  }
+  
+  #Retornamos el vector
+  v
+}
+```
+
+Un ejemplo de funcionamiento la podemos ver a continuación. La tabla final representa en cada fila el valor del aminoacido que queremos representar, y las columnas el valor en el vector de 20 posiciones. Vemos que donde hay 1s se codifica el aminoacido correctamente.
+
+```{r functionOrthoSamples}
+aminoacids <- c("A", "R", "N", "D", "C", "Q", "E", "G", "H", "I", 
+                "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V") 
+amino_test <- 'AAAGKSGG'
+m <- matrix(generate_ortho(amino_test),nrow = 8, ncol = 20, byrow=TRUE)
+colnames(m) <- aminoacids 
+rownames(m) <- strsplit(as.character(amino_test), "", fixed = TRUE)[[1]]
+print(m)
+```
+
+Por tanto, aplicaremos dicha función a nuestro conjunto de datos y generaremos un nuevo *data frame* con todos los datos, incluidos por el momento el octómero (para validar) y el diagnóstico. Finalmente, mostramos un resumen acerca de la frecuencia de los aminoácidos **A**, **C** e **I** en la primera posición del octómero, como ejemplo.
+
+```{r applyOrthoToData}
+#Generamos una matrix de 160 columns para almacenar los resultados de nuestra función
+m <- matrix(0, nrow = no_rows, ncol = 160, byrow=TRUE)
+
+#Algoritmo para almacenar los valores en cada fila de la matriz
+i <- 1
+for (x in df$octamer) {
+  m[i,] <- generate_ortho(x)
+  i <- i + 1
+}
+
+#Generar un data frame a partir de la matrix, y los octámeros y diagnóstico
+df <- data.frame(df$octamer, df$diagnosis, m)
+
+#Damos nombres a las columnas
+colnames(df) <- c("octamer","diagnosis",paste("V", 1:160, sep = ""))
+
+#Resumen de las variables
+summary(df[c("V1", "V5", "V10")])
+```
+
+### Preparación de datos - creando conjuntos de datos de entrenamiento/test
+
+A continuación, ya que no disponemos de otros conjuntos de datos de apoyo, dividiremos nuestro conjunto de datos en 2 grupos: un conjunto de datos de entrenamiento y un conjunto de datos de pruebas, utilizando así **`r training_set`%** del conjunto para training, y **`r test_set`%** del conjunto para test respectivamente, conjuntos que generamos mediante el siguiente código.
+
+```{r trainingTestSets}
+set.seed(knn_seed)
+sample <- sample.int(n = no_rows, size = floor(training_set/100*no_rows), replace = F)
+df_train <- df[sample, ]
+df_test  <- df[-sample, ]
+```
+
+En nuestros nuevos conjunto de datos para training y test, tenemos todas los octómeros clasificados de forma correcta entre *Yes* o *No* según si la proteasa tiene escisión o no. En este caso, trabajar con un conjunto de datos donde ya sabemos la predicción no tiene mucho sentido, además de que las valores obtenidos como resultado de la fase de entrenamiento puede llevarnos a conclusiones erróneas, ya que no podremos saber si el modelo está demasiado ajustado al conjunto de datos ni cómo el modelo trabajará con casos que no ha visto anteriormente. Lo que haremos primero es eliminar aquellas variables que no necesitamos, creando un nuevo data frame sin el octámero ni la variable de diagnóstico.
+
+```{r dataFramesNormalizaed}
+df_train_n <- df_train[3:162]
+df_test_n <- df_test[3:162]
+```
+
+## Paso 3 - Entrenando el modelo
+
+Con los conjutos de datos necesarios y preparados ya para clasificar los octámeros, pasaremos a la utilizacion del algoritmo **k-NN**. Para ello, utilizaremos una implementación que nos ofrece el paquete R `class`. La función `knn()` en dicho paquete nos proporciona una implementación estándar de dicho algoritmo, utilizando la distancia Euclídea, y con *k* como parámetro representando el número de *vecinos* a considerar, sobre los que se eligirá el más votado sobre los calculados para cada biopsia, y en caso de empate, uno de forma aleatoria. A continuación podemos ver el código para entrenar el modelo para cada *k = 3, 5, 7, 11*.
+
+```{r trainModel}
+knn_model_k3  <- knn(train = df_train_n, 
+                     test = df_test_n, 
+                     cl = df_train$diagnosis, 
+                     k=3, 
+                     prob=TRUE)
+
+knn_model_k5  <- knn(train = df_train_n, 
+                     test = df_test_n, 
+                     cl = df_train$diagnosis, 
+                     k=5, 
+                     prob=TRUE)
+
+knn_model_k7  <- knn(train = df_train_n, 
+                     test = df_test_n, 
+                     cl = df_train$diagnosis, 
+                     k=7, 
+                     prob=TRUE)
+
+knn_model_k11 <- knn(train = df_train_n, 
+                     test = df_test_n, 
+                     cl = df_train$diagnosis, 
+                     k=11, 
+                     prob=TRUE)
+```
+
+## Paso 4 - Evaluando el rendimiento
+
+El siguiente paso en el proceso es el de evaluar utilizar el conjunto de test y ver qué resultados nos proporciona para cada valor *k*. Para ello, utilizaremos la función `CrossTable()` del paquete `gmodels`, creando una matriz de confusión, y utilizaremos el paquete `pROC` para poder representar la ROC y la AUC correspondiente para cada *k = 3, 5, 7, 11*..
+
+**Resultados para *k = 3***
+
+```{r resultsK3}
+ct_k3 <- CrossTable(x = df_test$diagnosis, y = knn_model_k3, prop.chisq=FALSE)
+roc_k3 <- roc(df_test$diagnosis, attributes(knn_model_k3)$prob, 
+              direction = "<", levels=c("Yes", "No"))
+plot(roc_k3, print.thres = T, print.auc=T)
+```
+
+**Resultados para *k = 5***
+
+```{r resultsK5}
+ct_k5 <- CrossTable(x = df_test$diagnosis, y = knn_model_k5, prop.chisq=FALSE)
+roc_k5 <- roc(df_test$diagnosis, attributes(knn_model_k5)$prob, 
+              direction = "<", levels=c("Yes", "No"))
+plot(roc_k5, print.thres = T, print.auc=T)
+```
+
+**Resultados para *k = 7***
+
+```{r resultsK7}
+ct_k7 <- CrossTable(x = df_test$diagnosis, y = knn_model_k7, prop.chisq=FALSE)
+roc_k7 <- roc(df_test$diagnosis, attributes(knn_model_k7)$prob, 
+              direction = "<", levels=c("Yes", "No"))
+plot(roc_k7, print.thres = T, print.auc=T)
+```
+
+**Resultados para *k = 11***
+
+```{r resultsK11}
+ct_k11 <- CrossTable(x = df_test$diagnosis, y = knn_model_k11, prop.chisq=FALSE)
+roc_k11 <- roc(df_test$diagnosis, attributes(knn_model_k11)$prob, 
+               direction = "<", levels=c("Yes", "No"))
+plot(roc_k11, print.thres = T, print.auc=T)
+```
+
+## Paso 5 - Evaluando los resultados
+
+El objetivo de nuestro modelo es, como se ha dicho al principio, clasificar los octómeros de forma que podamos predecir si tiene escisión o no, que es esencial para poder generar y testear hipótesis de cómo el HIV-1 afecta a las proteinas del portador. Por tanto, tenemos que evaluar los resultados en base a la clase positiva *Yes* (1).
+
+La siguiente tabla muestra la información pedida en la PEC:
+
+| **k** | **AUC** | **FP** | **FN** | **Error** | **Sensitividad** | **Especificidad** |
+|:-----------:|:----------|:----------|:----------|:----------|:----------|:----------|
+| 3 | `r round(auc(roc_k3),3)` | `r ct_k3$t[2,1]` | `r ct_k3$t[1,2]` | `r round(((ct_k3$t[1,2]+ct_k3$t[2,1])/sum(ct_k3$t))*100, 3)`% | `r round(ct_k3$t[1,1]*100/(ct_k3$t[1,2] + ct_k3$t[1,1]), 3)` % | `r round(ct_k3$t[2,2]*100/(ct_k3$t[2,1] + ct_k3$t[2,2]), 3)`% |
+| 5 | `r round(auc(roc_k5),3)` | `r ct_k5$t[2,1]` | `r ct_k5$t[1,2]` | `r round(((ct_k5$t[1,2]+ct_k5$t[2,1])/sum(ct_k5$t))*100, 3)`% | `r round(ct_k5$t[1,1]*100/(ct_k5$t[1,2] + ct_k5$t[1,1]), 3)` % | `r round(ct_k5$t[2,2]*100/(ct_k5$t[2,1] + ct_k5$t[2,2]), 3)`% |
+| 7 | `r round(auc(roc_k7),3)` | `r ct_k7$t[2,1]` | `r ct_k7$t[1,2]` | `r round(((ct_k7$t[1,2]+ct_k7$t[2,1])/sum(ct_k7$t))*100, 3)`% | `r round(ct_k7$t[1,1]*100/(ct_k7$t[1,2] + ct_k7$t[1,1]), 3)` % | `r round(ct_k7$t[2,2]*100/(ct_k7$t[2,1] + ct_k7$t[2,2]), 3)`% |
+| 11 | `r round(auc(roc_k11),3)` | `r ct_k11$t[2,1]` | `r ct_k11$t[1,2]` | `r round(((ct_k11$t[1,2]+ct_k11$t[2,1])/sum(ct_k11$t))*100, 3)`% | `r round(ct_k11$t[1,1]*100/(ct_k11$t[1,2] + ct_k11$t[1,1]), 3)` % | `r round(ct_k11$t[2,2]*100/(ct_k11$t[2,1] + ct_k11$t[2,2]), 3)`% |
+
+Evaluando los datos de forma conjunta, podemos realizar las siguientes afirmaciones:
+
+-   El modelo es en general bastante bueno en base a los valores de *AUC* generados por los diferentes valores de *k*, indicando que es capaz de distinguir bastante bien entre la clase positiva y la negativa.\
+-   En cambio, revisando la sensitividad vemos que es muy pobre, no estamos clasificando de forma correcta muchos de los casos positivos (alto número de falsos negativos).
+-   A mayor valor de *k*, nuestro modelo tiende a reducir el número de falsos positivos e incrementar los falsos negativos. Parece que incrementar *k* empeora nuestro modelo. A su vez, el porcentaje de error incrementa ligeramente al incrementar *k*.
+
+Concluimos que, si tenemos en cuenta lo anterior, consideramos que el modelo con *k = 3* es el que mejor se adaptaría a nuestras necesidades.
+
+# Referencias
